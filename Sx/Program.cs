@@ -155,6 +155,32 @@ namespace Sx
         A Next(int tries);
     }
 
+    public class ConstraintSatisfactionFailed : Exception { }
+
+    public class RndResult<A>
+    {
+        private A result;
+
+        public RndResult()
+        {
+            this.WasSuccessful = false;
+        }
+
+        public RndResult(A result)
+        {
+            this.WasSuccessful = true;
+            this.result = result;
+        }
+
+        public bool WasSuccessful { get; private set; }
+
+        public A GetResult()
+        {
+            if (!WasSuccessful)
+                throw new ConstraintSatisfactionFailed();
+            return result;
+        }
+    }
 
     public class FromFunc<T> : IRnd<T>
     {
