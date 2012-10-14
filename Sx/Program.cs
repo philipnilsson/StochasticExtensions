@@ -12,7 +12,9 @@ namespace Sx
         {
             var test = from x in (-10).RangeTo(10)
                        from y in (-10).RangeTo(10)
-                       where x*x + y*y < 5*5
+                       let z = x*x + y*y
+                       where z >= 5*5
+                       where z <= 8*8 
                        select new { x = x, y = y };
 
             foreach (var t in test.Take(10).Next())
@@ -52,7 +54,7 @@ namespace Sx
         public static IRnd<IEnumerable<A>> TakeNoRepeat<A>(this int count, IRnd<A> rnd) 
             where A: IEquatable<A>
         {
-            return new FromFunc<IEnumerable<A>>(() => NoRepeat(count, rnd));
+            return new FromFunc<IEnumerable<A>>(tries => NoRepeat(count, tries, rnd));
         }
 
         public static IRnd<IEnumerable<A>> TakeNoRepeat<A>(this IRnd<int> count, IRnd<A> rnd) 
@@ -61,15 +63,15 @@ namespace Sx
             return count.SelectMany(i => i.TakeNoRepeat(rnd));
         }
 
-        private static IEnumerable<A> NoRepeat<A>(int count, IRnd<A> rnd) where A: IEquatable<A>
+        private static IEnumerable<A> NoRepeat<A>(int count, int tries, IRnd<A> rnd) where A: IEquatable<A>
         {
             A last = default(A); 
             A[] arr = new A[count];
             for (int i = 0; i < count; i++)
             {
                 last = i == 0 
-                    ? rnd.Next() 
-                    : rnd.Where(a => !a.Equals(last)).Next();
+                    ? rnd.Next(tries) 
+                    : rnd.Where(a => !a.Equals(last)).Next(tries);
                 arr[i] = last;
             }
             return arr;
@@ -77,15 +79,15 @@ namespace Sx
 
         public static IRnd<IEnumerable<A>> Sequence<A>(this IEnumerable<IRnd<A>> seq)
         {
-            return new FromFunc<IEnumerable<A>>(() =>
-                seq.Select(rnd => rnd.Next())
+            return new FromFunc<IEnumerable<A>>(tries =>
+                seq.Select(rnd => rnd.Next(tries))
             );
         }
 
         public static IRnd<B> Select<A, B>(this IRnd<A> source, Func<A, B> func)
         {
-            return new FromFunc<B>(() => 
-                func(source.Next())
+            return new FromFunc<B>(tries => 
+                func(source.Next(tries))
             );
         }
 
@@ -96,22 +98,23 @@ namespace Sx
 
         public static IRnd<C> SelectMany<A, B, C>(this IRnd<A> source, Func<A, IRnd<B>> func, Func<A,B,C> select)
         {
-            return new FromFunc<C>(() => 
+            return new FromFunc<C>(tries => 
             {
-                var a = source.Next();
-                return select(a, func(a).Next());
+                var a = source.Next(tries);
+                return select(a, func(a).Next(tries));
             });
         }
 
         public static IRnd<A> Where<A>(this IRnd<A> source, Func<A, bool> predicate)
         {
-            return new FromFunc<A>(() =>
+            return new FromFunc<A>(tries =>
             {
-                for (int i = 0; i < Sx.NumberTries; i++)
+                for (int i = 0; i < tries; i++)
                 {
-                    var a = source.Next();
+                    var a = source.Next(1);
                     if (predicate(a))
                         return a;
+                    Console.WriteLine("Rejected: " + a);
                 }
                 throw new Exception(
                     "Sampling exited after " + Sx.NumberTries + " tries.");
@@ -125,9 +128,14 @@ namespace Sx
 
         public static IRnd<int> RangeTo(this int from, int to)
         {
-            return new FromFunc<int>(() =>
+            return new FromFunc<int>(_ =>
                 Sx.Random.Next(from, to + 1)
             );
+        }
+
+        public static A Next<A>(this IRnd<A> rnd)
+        {
+            return rnd.Next(Sx.NumberTries);
         }
 
         [ThreadStatic]
@@ -144,21 +152,22 @@ namespace Sx
 
     public interface IRnd<A>
     {
-        A Next();
+        A Next(int tries);
     }
+
 
     public class FromFunc<T> : IRnd<T>
     {
-        private Func<T> action; 
+        private Func<int, T> action; 
 
-        public FromFunc(Func<T> action)
+        public FromFunc(Func<int, T> action)
         {
             this.action = action;
         }
 
-        public T Next()
+        public T Next(int tries)
         {
-            return action();
+            return action(tries);
         }
     }
 
@@ -172,7 +181,7 @@ namespace Sx
             this.ts = @enum;
         }
 
-        public A Next()
+        public A Next(int tries)
         {
             arr = arr ?? ts.ToArray();
             return arr[Sx.Random.Next(arr.Length)];
