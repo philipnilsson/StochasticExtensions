@@ -10,15 +10,19 @@ namespace Sx
     {
         static void Main(string[] args)
         {
-            var test = from x in (-10).RangeTo(10)
-                       from y in (-10).RangeTo(10)
-                       let z = x*x + y*y
-                       where z >= 5*5
-                       where z <= 8*8 
+            var test = from x in (-1.0).RangeTo(1.0)
+                       from y in (-1.0).RangeTo(1.0)
+                       where x*x + y*y <= 1.0
                        select new { x = x, y = y };
 
-            foreach (var t in test.Take(10).Next())
-                Console.WriteLine(t);
+            float ok = 0;
+            int count = 1000000;
+            for (int i = 0; i < count; i++)
+            {
+                if (test.Next(1).WasSuccessful)
+                    ok++;
+            }
+            Console.WriteLine(ok / count * 4);
 
             var dictionary = new[] { 
                 "Lorem", "Ipsum", "Dolor", "Sit", "Amet", "Am" }.Uniform();
@@ -34,10 +38,55 @@ namespace Sx
                 select first + " " + string.Join(" ", rest))
                 select string.Join(". ", sentences) + '.')
                 select string.Join("\n\n", paragraphs);
-             
-            Console.WriteLine(lorem.Next());
+
+            Console.WriteLine(lorem.Single());
         }
     }
+
+    public interface IRnd<A>
+    {
+        RndResult<A> Next(int tries);
+    }
+
+    public class ConstraintSatisfactionFailed : Exception { }
+
+    public class RndResult<A>
+    {
+        public RndResult()
+        {
+            this.WasSuccessful = false;
+        }
+
+        public RndResult(A result)
+        {
+            this.WasSuccessful = true;
+            this.result = result;
+        }
+
+        public bool WasSuccessful { get; private set; }
+
+        private readonly A result;
+        public A Result
+        {
+            get
+            {
+                if (WasSuccessful)
+                    return result;
+                throw new ConstraintSatisfactionFailed();
+            }
+        }
+
+        public override string ToString()
+        {
+            if (!WasSuccessful)
+                return "Nothing";
+            if (result == null)
+                return "null";
+            return result.ToString();
+        }
+
+    }
+
 
     public static class Sx
     {
@@ -63,31 +112,35 @@ namespace Sx
             return count.SelectMany(i => i.TakeNoRepeat(rnd));
         }
 
-        private static IEnumerable<A> NoRepeat<A>(int count, int tries, IRnd<A> rnd) where A: IEquatable<A>
+        private static RndResult<IEnumerable<A>> NoRepeat<A>(int count, int tries, IRnd<A> rnd) where A: IEquatable<A>
         {
             A last = default(A); 
             A[] arr = new A[count];
             for (int i = 0; i < count; i++)
             {
-                last = i == 0 
+                var res = i == 0 
                     ? rnd.Next(tries) 
                     : rnd.Where(a => !a.Equals(last)).Next(tries);
+                if (!res.WasSuccessful)
+                    return new RndResult<IEnumerable<A>>();
+                last = res.Result;
                 arr[i] = last;
             }
-            return arr;
+            return new RndResult<IEnumerable<A>>(arr);
         }
 
         public static IRnd<IEnumerable<A>> Sequence<A>(this IEnumerable<IRnd<A>> seq)
         {
             return new FromFunc<IEnumerable<A>>(tries =>
-                seq.Select(rnd => rnd.Next(tries))
+                seq.Select(rnd => rnd.Next(tries)).Sequence()
             );
         }
 
         public static IRnd<B> Select<A, B>(this IRnd<A> source, Func<A, B> func)
         {
             return new FromFunc<B>(tries => 
-                func(source.Next(tries))
+                from a in source.Next(tries)
+                select func(a)
             );
         }
 
@@ -96,12 +149,13 @@ namespace Sx
             return source.SelectMany(func, (_, b) => b);
         }
 
-        public static IRnd<C> SelectMany<A, B, C>(this IRnd<A> source, Func<A, IRnd<B>> func, Func<A,B,C> select)
+        public static IRnd<C> SelectMany<A, B, C>(this IRnd<A> source, Func<A, IRnd<B>> func, Func<A,B,C> selector)
         {
             return new FromFunc<C>(tries => 
             {
-                var a = source.Next(tries);
-                return select(a, func(a).Next(tries));
+                return from a in source.Next(tries)
+                       from b in func(a).Next(tries)
+                       select selector(a, b);
             });
         }
 
@@ -111,13 +165,14 @@ namespace Sx
             {
                 for (int i = 0; i < tries; i++)
                 {
-                    var a = source.Next(1);
+                    var ra = source.Next(1);
+                    if (!ra.WasSuccessful)
+                        continue;
+                    var a = ra.Result;
                     if (predicate(a))
-                        return a;
-                    Console.WriteLine("Rejected: " + a);
+                        return ra;
                 }
-                throw new Exception(
-                    "Sampling exited after " + Sx.NumberTries + " tries.");
+                return new RndResult<A>();
             });
         }
 
@@ -129,13 +184,25 @@ namespace Sx
         public static IRnd<int> RangeTo(this int from, int to)
         {
             return new FromFunc<int>(_ =>
-                Sx.Random.Next(from, to + 1)
+                new RndResult<int>(Sx.Random.Next(from, to + 1))
             );
         }
 
-        public static A Next<A>(this IRnd<A> rnd)
+        public static IRnd<double> RangeTo(this double from, double to)
         {
-            return rnd.Next(Sx.NumberTries);
+            return new FromFunc<double>(_ =>
+                new RndResult<double>(Sx.Random.NextDouble() * (to - from) + from)
+            );
+        }
+
+        public static A Single<A>(this IRnd<A> rnd)
+        {
+            return rnd.Next(Sx.NumberTries).Result;
+        }
+
+        public static A Single<A>(this IRnd<A> rnd, int tries)
+        {
+            return rnd.Next(tries).Result;
         }
 
         [ThreadStatic]
@@ -146,52 +213,60 @@ namespace Sx
             get { return rng ?? (rng = new Random(lastSeed = Interlocked.Increment(ref lastSeed))); }
         }
 
-        [ThreadStatic]
         public static int NumberTries = 100;
     }
 
-    public interface IRnd<A>
+    internal static class Maybe 
     {
-        A Next(int tries);
+
+        internal static RndResult<B> Select<A, B>(this RndResult<A> res, Func<A, B> func)
+        {
+            if (!res.WasSuccessful)
+                return new RndResult<B>();
+            return new RndResult<B>(func(res.Result));
+        }
+
+        internal static RndResult<C> SelectMany<A, B, C>(
+            this RndResult<A> res,
+            Func<A, RndResult<B>> func,
+            Func<A, B, C> selector)
+        {
+            if (!res.WasSuccessful)
+                return new RndResult<C>();
+            var resB = func(res.Result);
+            if (!resB.WasSuccessful)
+                return new RndResult<C>();
+            return new RndResult<C>(selector(res.Result, resB.Result));
+        }
+
+        internal static RndResult<B> SelectMany<A,B>(this RndResult<A> res, Func<A, RndResult<B>> func)
+        {
+            return res.SelectMany(func, (_, b) => b);
+        }
+
+        internal static RndResult<IEnumerable<A>> Sequence<A>(this IEnumerable<RndResult<A>> seq)
+        {
+            var rs = new List<A>();
+            foreach (var res in seq)
+            {
+                if (!res.WasSuccessful)
+                    return new RndResult<IEnumerable<A>>();
+                rs.Add(res.Result);
+            }
+            return new RndResult<IEnumerable<A>>(rs);
+        }
     }
 
-    public class ConstraintSatisfactionFailed : Exception { }
-
-    public class RndResult<A>
+    public class FromFunc<A> : IRnd<A>
     {
-        private A result;
+        private Func<int, RndResult<A>> action; 
 
-        public RndResult()
-        {
-            this.WasSuccessful = false;
-        }
-
-        public RndResult(A result)
-        {
-            this.WasSuccessful = true;
-            this.result = result;
-        }
-
-        public bool WasSuccessful { get; private set; }
-
-        public A GetResult()
-        {
-            if (!WasSuccessful)
-                throw new ConstraintSatisfactionFailed();
-            return result;
-        }
-    }
-
-    public class FromFunc<T> : IRnd<T>
-    {
-        private Func<int, T> action; 
-
-        public FromFunc(Func<int, T> action)
+        public FromFunc(Func<int, RndResult<A>> action)
         {
             this.action = action;
         }
 
-        public T Next(int tries)
+        public RndResult<A> Next(int tries)
         {
             return action(tries);
         }
@@ -207,10 +282,10 @@ namespace Sx
             this.ts = @enum;
         }
 
-        public A Next(int tries)
+        public RndResult<A> Next(int tries)
         {
             arr = arr ?? ts.ToArray();
-            return arr[Sx.Random.Next(arr.Length)];
+            return new RndResult<A>(arr[Sx.Random.Next(arr.Length)]);
         }
     }
 }
